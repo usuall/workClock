@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>업무 기한 계산기</title>
+<style>
+  :root {
+    --bg: #f3f4f6; --card: #fff; --text: #1f2329; --muted: #6b7280;
+    --line: #e5e7eb; --accent: #2563eb; --badge: #eff4ff; --late: #dc2626;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111317; --card: #1b1e24; --text: #e8eaed; --muted: #9aa0a6;
+      --line: #2c3038; --accent: #7aa7ff; --badge: #22304a; --late: #f87171;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 24px 16px;
+    background: var(--bg); color: var(--text);
+    font-family: system-ui, -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+  }
+  .card {
+    width: 100%; max-width: 460px; background: var(--card); border-radius: 18px;
+    padding: 28px; box-shadow: 0 6px 28px rgb(0 0 0 / .08);
+  }
+  h1 { margin: 0 0 4px; font-size: 22px; }
+  .sub { margin: 0 0 24px; color: var(--muted); font-size: 14px; }
+  .inputs { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 8px; }
+  label { font-size: 13px; font-weight: 600; color: var(--muted); }
+  input {
+    display: block; width: 100%; height: 44px; margin-top: 6px; padding: 0 12px; font: inherit; font-size: 16px;
+    color: inherit; background: transparent; border: 1px solid var(--line); border-radius: 10px;
+  }
+  input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .row {
+    display: flex; justify-content: space-between; align-items: center; gap: 12px;
+    padding: 14px 0; border-top: 1px solid var(--line);
+  }
+  .row:first-of-type { margin-top: 16px; }
+  .name { font-size: 14px; color: var(--muted); }
+  .date { font-size: 17px; font-weight: 700; margin-top: 2px; }
+  .dday {
+    flex-shrink: 0; padding: 4px 10px; border-radius: 999px; font-size: 13px; font-weight: 700;
+    color: var(--accent); background: var(--badge);
+  }
+  .dday.late { color: var(--late); }
+  .note { margin: 8px 0 0; font-size: 12px; color: var(--muted); line-height: 1.5; }
+  .warn { color: var(--late); }
+  button {
+    width: 100%; margin-top: 20px; padding: 12px; font: inherit; font-weight: 700; color: #fff;
+    background: var(--accent); border: 0; border-radius: 10px; cursor: pointer;
+  }
+  button:disabled { opacity: .4; cursor: default; }
+</style>
+</head>
+<body>
+<main class="card">
+  <h1>업무 기한 계산기</h1>
+  <p class="sub">시작일과 기간을 넣으면 마감일을 알려드려요.</p>
+
+  <div class="inputs">
+    <label>시작일<input type="date" id="start"></label>
+    <label>기간 (일)<input type="number" id="days" min="1" max="3650" value="10" inputmode="numeric"></label>
+  </div>
+
+  <div id="results" aria-live="polite"></div>
+  <p class="note">시작일 다음 날을 1일째로 셉니다 (초일 불산입).<span id="warn" class="warn"></span></p>
+
+  <button id="copy" type="button">결과 복사</button>
+</main>
+
+<script>
+// 공휴일 목록 (대체공휴일·임시공휴일 포함). 해마다 여기에 날짜를 추가하세요.
+const HOLIDAYS = new Set([
+  // 2026
+  '2026-01-01', '2026-02-16', '2026-02-17', '2026-02-18', '2026-03-01', '2026-03-02',
+  '2026-05-05', '2026-05-24', '2026-05-25', '2026-06-03', '2026-06-06', '2026-07-17',
+  '2026-08-15', '2026-08-17', '2026-09-24', '2026-09-25', '2026-09-26', '2026-10-03',
+  '2026-10-05', '2026-10-09', '2026-12-25',
+  // 2027
+  '2027-01-01', '2027-02-06', '2027-02-07', '2027-02-08', '2027-02-09', '2027-03-01',
+  '2027-05-05', '2027-05-13', '2027-06-06', '2027-07-17', '2027-07-19', '2027-08-15',
+  '2027-08-16', '2027-09-14', '2027-09-15', '2027-09-16', '2027-10-03', '2027-10-04',
+  '2027-10-09', '2027-10-11', '2027-12-25', '2027-12-27',
+]);
+const LAST_HOLIDAY_YEAR = Math.max(...[...HOLIDAYS].map(d => +d.slice(0, 4)));
+
+const pad = n => String(n).padStart(2, '0');
+const iso = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const parse = s => { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d); };
+const fmt = d => `${d.getFullYear()}. ${d.getMonth() + 1}. ${d.getDate()}. (${'일월화수목금토'[d.getDay()]})`;
+
+function addCalendarDays(start, days) {
+  const d = new Date(start);
+  d.setDate(d.getDate() + days);
+  return d;
+}
+
+function addWorkdays(start, days, skipHolidays) {
+  const d = new Date(start);
+  while (days > 0) {
+    d.setDate(d.getDate() + 1);
+    const weekend = d.getDay() === 0 || d.getDay() === 6;
+    if (!weekend && !(skipHolidays && HOLIDAYS.has(iso(d)))) days--;
+  }
+  return d;
+}
+
+function dday(target) {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const diff = Math.round((target - today) / 86400000);
+  return diff === 0 ? 'D-Day' : diff > 0 ? `D-${diff}` : `D+${-diff}`;
+}
+
+const $ = id => document.getElementById(id);
+let copyText = '';
+
+function render() {
+  const days = Number($('days').value);
+  const ok = $('start').value && Number.isInteger(days) && days >= 1 && days <= 3650;
+  $('copy').disabled = !ok;
+  $('warn').textContent = '';
+  if (!ok) {
+    $('results').innerHTML = '<p class="note">시작일과 1~3650 사이의 기간을 입력하세요.</p>';
+    return;
+  }
+
+  const start = parse($('start').value);
+  const results = [
+    ['달력 기준', addCalendarDays(start, days)],
+    ['근무일 기준 (주말 제외)', addWorkdays(start, days, false)],
+    ['근무일 기준 (주말·공휴일 제외)', addWorkdays(start, days, true)],
+  ];
+
+  $('results').innerHTML = results.map(([name, d]) => {
+    const tag = dday(d);
+    return `<div class="row"><div><div class="name">${name}</div><div class="date">${fmt(d)}</div></div>`
+         + `<span class="dday${tag.startsWith('D+') ? ' late' : ''}">${tag}</span></div>`;
+  }).join('');
+
+  if (results[2][1].getFullYear() > LAST_HOLIDAY_YEAR) {
+    $('warn').textContent = ` ${LAST_HOLIDAY_YEAR}년 이후 공휴일은 목록에 없어 반영되지 않았습니다.`;
+  }
+
+  copyText = [`[업무 기한] 시작일 ${fmt(start)} / 기간 ${days}일`,
+    ...results.map(([name, d]) => `- ${name}: ${fmt(d)} ${dday(d)}`)].join('\n');
+}
+
+$('copy').addEventListener('click', async () => {
+  try {
+    await navigator.clipboard.writeText(copyText);
+    $('copy').textContent = '복사됨!';
+  } catch {
+    $('copy').textContent = '복사 실패 — 직접 선택해 복사하세요';
+  }
+  setTimeout(() => { $('copy').textContent = '결과 복사'; }, 1500);
+});
+
+$('start').value = iso(new Date());
+$('start').addEventListener('input', render);
+$('days').addEventListener('input', render);
+render();
+</script>
+</body>
+</html>
